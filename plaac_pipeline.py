@@ -5,33 +5,38 @@ import subprocess
 import importlib.util
 import shutil
 import platform
+from PIL import Image
 
 # ==========================
-# USER SET PATHS (single prompt)
+# DEFAULT DIRECTORIES (inside repo)
+# ==========================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # current script folder
+TOOLS_DIR = os.path.join(BASE_DIR, "plaac")
+INPUT_DIR = os.path.join(BASE_DIR, "inputs")
+OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+FILTER_OUTPUT_DIR = os.path.join(BASE_DIR, "redline_max_detected")
+TEMP_IMAGE_DIR = os.path.join(BASE_DIR, "temp_pdf_pages")
+
+# ==========================
+# CREATE REQUIRED DIRECTORIES
+# ==========================
+for folder in [TOOLS_DIR, INPUT_DIR, OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_DIR]:
+    os.makedirs(folder, exist_ok=True)
+
+# ==========================
+# OPTIONAL USER OVERRIDE
 # ==========================
 dirs_input = input(
-    "Enter directories as: PLAAC_tools,input,output,filtered,temp [Press Enter for defaults]: "
+    f"Enter directories as: PLAAC_tools,input,output,filtered,temp [Press Enter to use defaults]: "
 ).strip()
 
-if dirs_input == "":
-    TOOLS_DIR = os.path.expanduser("~/tools/plaac")
-    INPUT_DIR = os.path.expanduser("~/tools/inputs")
-    OUTPUT_DIR = os.path.expanduser("~/tools/outputs")
-    FILTER_OUTPUT_DIR = "redline_max_detected"
-    TEMP_IMAGE_DIR = "temp_pdf_pages"
-else:
+if dirs_input:
     dirs = [d.strip() for d in dirs_input.split(",")]
-    TOOLS_DIR = dirs[0] if len(dirs) > 0 and dirs[0] else os.path.expanduser("~/tools/plaac")
-    INPUT_DIR = dirs[1] if len(dirs) > 1 and dirs[1] else os.path.expanduser("~/tools/inputs")
-    OUTPUT_DIR = dirs[2] if len(dirs) > 2 and dirs[2] else os.path.expanduser("~/tools/outputs")
-    FILTER_OUTPUT_DIR = dirs[3] if len(dirs) > 3 and dirs[3] else "redline_max_detected"
-    TEMP_IMAGE_DIR = dirs[4] if len(dirs) > 4 and dirs[4] else "temp_pdf_pages"
-
-# Create directories if not exist
-os.makedirs(INPUT_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(FILTER_OUTPUT_DIR, exist_ok=True)
-os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
+    TOOLS_DIR = dirs[0] if len(dirs) > 0 and dirs[0] else TOOLS_DIR
+    INPUT_DIR = dirs[1] if len(dirs) > 1 and dirs[1] else INPUT_DIR
+    OUTPUT_DIR = dirs[2] if len(dirs) > 2 and dirs[2] else OUTPUT_DIR
+    FILTER_OUTPUT_DIR = dirs[3] if len(dirs) > 3 and dirs[3] else FILTER_OUTPUT_DIR
+    TEMP_IMAGE_DIR = dirs[4] if len(dirs) > 4 and dirs[4] else TEMP_IMAGE_DIR
 
 # ==========================
 # DEPENDENCIES
@@ -195,4 +200,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
