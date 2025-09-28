@@ -133,8 +133,12 @@ def redline_touches_top(image_path):
     red_pixel_positions = np.where(red_mask == 255)
     return np.any(red_pixel_positions[0] == 0)
 
-def filter_plaac_pdfs(output_dir, filter_dir, temp_dir):
-    pdf_files = [f for f in os.listdir(output_dir) if f.lower().endswith(".pdf")]
+def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None):
+    if selected_files is None:
+        pdf_files = [f for f in os.listdir(output_dir) if f.lower().endswith(".pdf")]
+    else:
+        pdf_files = selected_files
+
     total_hits = 0
     for pdf_file in pdf_files:
         input_pdf = os.path.join(output_dir, pdf_file)
@@ -215,6 +219,21 @@ def main():
         filter_plaac_pdfs(OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_DIR)
 
     print("\nPipeline complete ✅")
+
+    # ==========================
+    # Auto-run PDF Filtering after PLAAC analysis
+    # ==========================
+    pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".pdf")]
+    if pdf_files:
+        print("\n🔎 Auto Prion Filtering on Outputs")
+        user_choice = input("Enter PDF filename to filter (or press Enter for all): ").strip()
+        if user_choice:
+            if user_choice in pdf_files:
+                filter_plaac_pdfs(OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_DIR, [user_choice])
+            else:
+                print(f"❌ PDF not found: {user_choice}")
+        else:
+            filter_plaac_pdfs(OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_DIR, pdf_files)
 
 if __name__ == "__main__":
     main()
