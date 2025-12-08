@@ -8,6 +8,9 @@ import platform
 from PIL import Image
 import cv2
 import numpy as np
+import multiprocessing as mp
+import time
+import gc
 
 # ==========================
 # WORKING PATHS (dynamic)
@@ -24,9 +27,17 @@ for folder in [TOOLS_DIR, INPUT_DIR, OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_D
     os.makedirs(folder, exist_ok=True)
 
 # ==========================
+# PERFORMANCE TUNABLES
+# ==========================
+DEFAULT_WORKERS = max(1, min(mp.cpu_count() - 1, 8))  # number of parallel workers
+DEFAULT_DPI = 150  # PDF render DPI
+POOL_CHUNKSIZE = 32  # multiprocessing chunksize
+BATCH_SIZE = 5000   # pages per batch
+
+# ==========================
 # DEPENDENCIES
 # ==========================
-PYTHON_PACKAGES = {"cv2": "opencv-python", "numpy": "numpy", "PIL": "pillow"}
+PYTHON_PACKAGES = {"cv2": "opencv-python", "numpy": "numpy", "PIL": "pillow", "pypdf": "pypdf"}
 EXTERNAL_TOOLS = {
     "java": "Java (to run plaac.jar)",
     "Rscript": "R (to run plaac_plot.r)",
@@ -102,25 +113,46 @@ def run_plaac(input_fasta, output_txt, output_pdf):
     print(f"✔ PLAAC analysis complete: {output_txt}, {output_pdf}")
 
 # ==========================
-# PDF FILTER
+# pypdf loader
 # ==========================
-def convert_pdf_to_images(pdf_path, temp_dir):
-    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    output_path = os.path.join(temp_dir, base_name)
-    for f in os.listdir(temp_dir):
-        if f.startswith(base_name):
-            os.remove(os.path.join(temp_dir, f))
-    cmd = ["pdftoppm", "-png", pdf_path, output_path]
-    subprocess.run(cmd, check=True)
-    images = sorted([
-        os.path.join(temp_dir, f)
-        for f in os.listdir(temp_dir)
-        if f.startswith(base_name) and f.endswith(".png")
-    ])
-    return images
+def ensure_pypdf():
+    try:
+        from pypdf import PdfReader, PdfWriter
+        return PdfReader, PdfWriter
+    except Exception:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pypdf"])
+        from pypdf import PdfReader, PdfWriter
+        return PdfReader, PdfWriter
 
+def get_pdf_page_count(pdf_path):
+    PdfReader, _ = ensure_pypdf()
+    reader = PdfReader(pdf_path)
+    return len(reader.pages)
+
+# ==========================
+# PDF -> PNG renderer
+# ==========================
+def render_single_page_to_png(pdf_path, page_num, temp_dir, dpi=DEFAULT_DPI):
+    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    out_prefix = os.path.join(temp_dir, f"{base_name}_p{page_num:06d}")
+    cmd = ["pdftoppm", "-png", "-r", str(dpi), "-f", str(page_num), "-l", str(page_num), pdf_path, out_prefix]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # find generated file
+    for fname in os.listdir(temp_dir):
+        if fname.startswith(os.path.basename(out_prefix)) and fname.endswith(".png"):
+            return os.path.join(temp_dir, fname)
+    cand = out_prefix + "-1.png"
+    if os.path.exists(cand):
+        return cand
+    cand2 = out_prefix + ".png"
+    if os.path.exists(cand2):
+        return cand2
+    raise FileNotFoundError(f"pdftoppm did not create PNG for page {page_num}")
+
+# ==========================
+# Redline detection
+# ==========================
 def redline_touches_top(image_path):
-    """Detect if red line in top graph reaches the top (value 1)."""
     image = Image.open(image_path)
     cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
@@ -133,40 +165,121 @@ def redline_touches_top(image_path):
     red_pixel_positions = np.where(red_mask == 255)
     return np.any(red_pixel_positions[0] == 0)
 
-def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None):
+# ==========================
+# Worker for multiprocessing
+# ==========================
+def worker_render_and_check(args):
+    pdf_path, page_num, temp_dir, dpi = args
+    try:
+        png_path = render_single_page_to_png(pdf_path, page_num, temp_dir, dpi=dpi)
+    except Exception as e:
+        return (page_num, False, f"render_error:{e}")
+
+    try:
+        hit = redline_touches_top(png_path)
+    except Exception as e:
+        hit = False
+
+    try:
+        if os.path.exists(png_path):
+            os.remove(png_path)
+    except:
+        pass
+
+    gc.collect()
+    return (page_num, bool(hit), None)
+
+# ==========================
+# Batch-based PDF filtering (streaming)
+# ==========================
+def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None, workers=DEFAULT_WORKERS, dpi=DEFAULT_DPI, batch_size=BATCH_SIZE):
     if selected_files is None:
         pdf_files = [f for f in os.listdir(output_dir) if f.lower().endswith(".pdf")]
     else:
         pdf_files = selected_files
 
     total_hits = 0
+
     for pdf_file in pdf_files:
         input_pdf = os.path.join(output_dir, pdf_file)
         print(f"\nFiltering: {input_pdf}")
         base_name = os.path.splitext(pdf_file)[0]
         output_pdf = os.path.join(filter_dir, f"{base_name}_filtered.pdf")
+
         try:
-            page_images = convert_pdf_to_images(input_pdf, temp_dir)
-            detected_images = []
-            for img_path in page_images:
-                if redline_touches_top(img_path):
-                    detected_images.append(img_path)
-                    print(f"✅ Red line touches top: {os.path.basename(img_path)}")
-                else:
-                    print(f"❌ Skipped: {os.path.basename(img_path)}")
-            if detected_images:
-                pil_images = [Image.open(p).convert("RGB") for p in detected_images]
-                pil_images[0].save(output_pdf, save_all=True, append_images=pil_images[1:])
-                print(f"✔ Filtered PDF created: {output_pdf}")
-                total_hits += 1
-            else:
-                print("⚠ No pages detected with red line touching top.")
-            # Cleanup temp images
-            for img_path in page_images:
-                if os.path.exists(img_path):
-                    os.remove(img_path)
+            PdfReader, PdfWriter = ensure_pypdf()
+            page_count = get_pdf_page_count(input_pdf)
         except Exception as e:
-            print(f"⚠ Error processing {input_pdf}: {e}")
+            print(f"⚠ Could not read page count for {input_pdf}: {e}")
+            continue
+
+        print(f"   → Total pages: {page_count}  |  Workers: {workers}  |  DPI: {dpi}")
+
+        all_hit_pages = []
+
+        # Process in batches
+        for start_page in range(1, page_count + 1, batch_size):
+            end_page = min(start_page + batch_size - 1, page_count)
+            print(f"   → Processing batch: pages {start_page}-{end_page}")
+            args_iter = ((input_pdf, pnum, temp_dir, dpi) for pnum in range(start_page, end_page + 1))
+            hits = {}
+
+            try:
+                pool = mp.Pool(processes=workers)
+                it = pool.imap_unordered(worker_render_and_check, args_iter, chunksize=POOL_CHUNKSIZE)
+                processed = 0
+                last_print = 0
+                for res in it:
+                    page_num, hit_flag, err = res
+                    processed += 1
+                    if hit_flag:
+                        hits[page_num] = True
+                    # show batch progress
+                    if processed == 1 or time.time() - last_print >= 0.5:
+                        pct = (processed / (end_page - start_page + 1)) * 100
+                        print(f"\r      Batch progress: {processed}/{end_page-start_page+1} pages ({pct:.2f}%)", end="")
+                        last_print = time.time()
+                pool.close()
+                pool.join()
+                print()
+            except Exception as e:
+                try:
+                    pool.terminate()
+                    pool.join()
+                except:
+                    pass
+                print(f"\n⚠ Parallel processing error in batch: {e}")
+                continue
+
+            all_hit_pages.extend(sorted(hits.keys()))
+
+            # Cleanup temp images
+            try:
+                for f in os.listdir(temp_dir):
+                    if f.startswith(base_name):
+                        fp = os.path.join(temp_dir, f)
+                        try: os.remove(fp)
+                        except: pass
+            except: pass
+
+        if not all_hit_pages:
+            print("⚠ No pages detected with red line touching top.")
+            continue
+
+        # Stream filtered pages into final PDF
+        writer = PdfWriter()
+        reader = PdfReader(input_pdf)
+        for pnum in all_hit_pages:
+            writer.add_page(reader.pages[pnum - 1])
+
+        try:
+            with open(output_pdf, "wb") as f_out:
+                writer.write(f_out)
+            print(f"✔ Filtered PDF created: {output_pdf}  (pages kept: {len(all_hit_pages)})")
+            total_hits += 1
+        except Exception as e:
+            print(f"⚠ Error writing filtered PDF {output_pdf}: {e}")
+
     print(f"\n📊 Filter Summary: {total_hits} PDFs had prion-like hits.\n")
 
 # ==========================
@@ -177,11 +290,10 @@ def main():
     py_status = check_python_packages()
     tool_status = check_external_tools()
     show_dependency_summary(py_status, tool_status)
+    global cv2, np, Image
     cv2, np, Image = import_libraries()
 
-    # ==========================
     # FASTA Processing
-    # ==========================
     fasta_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".fasta")]
 
     if fasta_files:
@@ -201,9 +313,7 @@ def main():
 
     else:
         print(f"No FASTA files found in {INPUT_DIR}")
-        # ==========================
         # PDF Filtering
-        # ==========================
         pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".pdf")]
         if not pdf_files:
             print(f"No PDF files found in {OUTPUT_DIR}")
@@ -215,14 +325,11 @@ def main():
             else:
                 print(f"❌ PDF not found: {user_choice}")
                 return
-        # filter PDFs
         filter_plaac_pdfs(OUTPUT_DIR, FILTER_OUTPUT_DIR, TEMP_IMAGE_DIR)
 
     print("\nPipeline complete ✅")
 
-    # ==========================
-    # Auto-run PDF Filtering after PLAAC analysis
-    # ==========================
+    # Auto-run PDF Filtering on outputs
     pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".pdf")]
     if pdf_files:
         print("\n🔎 Auto Prion Filtering on Outputs")
