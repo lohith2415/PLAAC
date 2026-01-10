@@ -137,7 +137,6 @@ def render_single_page_to_png(pdf_path, page_num, temp_dir, dpi=DEFAULT_DPI):
     out_prefix = os.path.join(temp_dir, f"{base_name}_p{page_num:06d}")
     cmd = ["pdftoppm", "-png", "-r", str(dpi), "-f", str(page_num), "-l", str(page_num), pdf_path, out_prefix]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # find generated file
     for fname in os.listdir(temp_dir):
         if fname.startswith(os.path.basename(out_prefix)) and fname.endswith(".png"):
             return os.path.join(temp_dir, fname)
@@ -217,7 +216,6 @@ def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None, wor
 
         all_hit_pages = []
 
-        # Process in batches
         for start_page in range(1, page_count + 1, batch_size):
             end_page = min(start_page + batch_size - 1, page_count)
             print(f"   → Processing batch: pages {start_page}-{end_page}")
@@ -234,7 +232,6 @@ def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None, wor
                     processed += 1
                     if hit_flag:
                         hits[page_num] = True
-                    # show batch progress
                     if processed == 1 or time.time() - last_print >= 0.5:
                         pct = (processed / (end_page - start_page + 1)) * 100
                         print(f"\r      Batch progress: {processed}/{end_page-start_page+1} pages ({pct:.2f}%)", end="")
@@ -253,7 +250,6 @@ def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None, wor
 
             all_hit_pages.extend(sorted(hits.keys()))
 
-            # Cleanup temp images
             try:
                 for f in os.listdir(temp_dir):
                     if f.startswith(base_name):
@@ -266,7 +262,6 @@ def filter_plaac_pdfs(output_dir, filter_dir, temp_dir, selected_files=None, wor
             print("⚠ No pages detected with red line touching top.")
             continue
 
-        # Stream filtered pages into final PDF
         writer = PdfWriter()
         reader = PdfReader(input_pdf)
         for pnum in all_hit_pages:
@@ -293,7 +288,6 @@ def main():
     global cv2, np, Image
     cv2, np, Image = import_libraries()
 
-    # FASTA Processing
     fasta_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".fasta")]
 
     if fasta_files:
@@ -313,7 +307,6 @@ def main():
 
     else:
         print(f"No FASTA files found in {INPUT_DIR}")
-        # PDF Filtering
         pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".pdf")]
         if not pdf_files:
             print(f"No PDF files found in {OUTPUT_DIR}")
@@ -329,7 +322,6 @@ def main():
 
     print("\nPipeline complete ✅")
 
-    # Auto-run PDF Filtering on outputs
     pdf_files = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".pdf")]
     if pdf_files:
         print("\n🔎 Auto Prion Filtering on Outputs")
@@ -344,3 +336,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
